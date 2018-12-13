@@ -3,6 +3,8 @@ namespace DarkflameCP\Server;
 
 // -- Imports
 use DarkflameCP\Logging\Logger;
+use DarkflameCP\Packet\Packet;
+use DarkflameCP\Packet\Parser\PacketParserIO;
 use DarkflameCP\Server\Exception\BindException;
 
 /**
@@ -11,7 +13,7 @@ use DarkflameCP\Server\Exception\BindException;
  *
  * An abstract class that describes a server.
  */
-class Server {
+abstract class Server {
 
     // -- Private Variables
 
@@ -31,7 +33,24 @@ class Server {
     /**
      * Server constructor.
      */
-    public function __construct() { }
+    public function __construct() {
+
+        // Initialize any necessary data here.
+        PacketParserIO::Initialize();
+    }
+
+
+
+
+    // -- Packet Handler Methods
+
+    /**
+     * Handles a received packet.
+     * @param resource $socket The client socket
+     * @param Packet $packet The packet
+     */
+    protected abstract function HandlePacket($socket, Packet $packet);
+
 
 
 
@@ -44,7 +63,7 @@ class Server {
      * @param int $backlog The backlog of packets we keep
      * @throws BindException Thrown if the server cannot bind to a port
      */
-    public function Start(int $address, int $port, int $backlog = 25) {
+    public function Start(int $address, int $port, int $backlog = 25): void {
 
         // Create the master socket
         $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
@@ -70,7 +89,7 @@ class Server {
     /**
      * Updates the server.
      */
-    public function Update() {
+    public function Update(): void {
 
         // Get the changed sockets
         $sockets = array_merge(array($this->masterSocket), $this->sockets);
@@ -80,15 +99,14 @@ class Server {
 
         // If nothing changed, exit
         if ($changed === 0) {
-            return false;
+            return;
         }
 
         // If the master socket is in the array, we need to accept a new client connection
         if (in_array($this->masterSocket, $sockets)) {
 
+            // Accept our new client socket
             $clientSocket = $this->AcceptClientSocket();
-
-            // TODO: Handle the new client socket
 
             // Remove the master socket from the array before we iterate through it
             unset($sockets[0]);
@@ -103,13 +121,56 @@ class Server {
             // If there is no data, remove the connection.
             // Otherwise, handle the received packet
             if ($data == null) {
+
                 $this->RemoveClientSocket($socket);
             } else {
-                // TODO: Handle socket packet
 
-                Logger::Notice("Received Data: $buffer");
+                // Handle socket packet
+                $dataArray = explode("\0", $buffer);
+                array_pop($dataArray);
+
+                foreach ($dataArray as $data) {
+
+                    Logger::Notice("Received Data: $data");
+
+                    // Create our packet
+                    $packet = new Packet($socket, $data);
+
+                    // Handle our packet
+                    $this->HandlePacket($socket, $packet);
+                }
             }
         }
+    }
+
+
+
+    // -- Packet Methods
+
+    /**
+     * Sends data to a socket.
+     * @param string $data The data to send
+     * @param resource $socket The socket to send the data to
+     * @param boolean $broadcast Whether or not to broadcast to all sockets (excluding the one passed)
+     * @return int The number of bytes written
+     */
+    public function SendData(string $data, $socket, bool $broadcast = false): int {
+        $data .= "\0";
+        $bytesWritten = 0;
+
+        // If we are broadcasting, send to all clients
+        if ($broadcast) {
+
+            foreach ($this->sockets as $curSocket) {
+                if (is_resource($socket) && $socket === $curSocket) continue;
+
+                $bytesWritten = socket_send($curSocket, $data, strlen($data), 0);
+            }
+        } else {
+            $bytesWritten = socket_send($socket, $data, strlen($data), 0);
+        }
+
+        return $bytesWritten;
     }
 
 
@@ -138,7 +199,7 @@ class Server {
      * Removes a client socket.
      * @param resource $socket The client socket to remove
      */
-    private function RemoveClientSocket($socket) {
+    private function RemoveClientSocket($socket): void {
 
         $index = array_search($socket, $this->sockets);
         unset($this->sockets[$index]);
